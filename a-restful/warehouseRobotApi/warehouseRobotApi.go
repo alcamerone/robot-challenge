@@ -1,4 +1,4 @@
-package server
+package warehouseRobotApi
 
 import (
 	"errors"
@@ -43,12 +43,6 @@ func AttachRoutes(router *web.Router) *web.Router {
 		Put("/task", handlePutCommand).
 		Get("/task/:taskId", handleGetTaskStatus).
 		Delete("/task/:taskId", handleCancelTask)
-}
-
-func main() {
-	router := web.New(Context{})
-	router = AttachRoutes(router)
-	log.Fatal(http.ListenAndServe(":8080", router))
 }
 
 func injectRobot(

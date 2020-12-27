@@ -1,4 +1,4 @@
-package server_test
+package warehouseRobotApi_test
 
 import (
 	"bytes"
@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/alcamerone/robot-challenge/a-restful/robot"
-	"github.com/alcamerone/robot-challenge/a-restful/server"
+	wrApi "github.com/alcamerone/robot-challenge/a-restful/warehouseRobotApi"
 	"github.com/gocraft/web"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
@@ -154,16 +154,16 @@ func (ttsn *TestTaskStatusNotifier) NotifyTaskStatus(status robot.RobotTask) {
 }
 
 func getContextInitMiddleware(
-	bot *server.Robot,
-	notifier server.TaskStatusNotifier,
+	bot *wrApi.Robot,
+	notifier wrApi.TaskStatusNotifier,
 ) func(
-	*server.Context,
+	*wrApi.Context,
 	web.ResponseWriter,
 	*web.Request,
 	web.NextMiddlewareFunc,
 ) {
 	return func(
-		ctx *server.Context,
+		ctx *wrApi.Context,
 		rw web.ResponseWriter,
 		req *web.Request,
 		next web.NextMiddlewareFunc,
@@ -193,16 +193,22 @@ func TestPutCommandTaskSuccess(t *testing.T) {
 	notifier := &TestTaskStatusNotifier{
 		statesNotified: make([]robot.RobotTask, 0),
 	}
-	serveBot := &server.Robot{Robot: bot}
-	router := web.New(server.Context{}).
+	serveBot := &wrApi.Robot{Robot: bot}
+	router := web.New(wrApi.Context{}).
 		Middleware(getContextInitMiddleware(serveBot, notifier))
-	router = server.AttachRoutes(router)
+	router = wrApi.AttachRoutes(router)
 
 	rw := httptest.NewRecorder()
 	req := httptest.NewRequest("PUT", "/task", bytes.NewBufferString(cmdString))
 	router.ServeHTTP(rw, req)
-
 	require.Equal(t, http.StatusOK, rw.Result().StatusCode)
+
+	// One more request for test coverage
+	rw = httptest.NewRecorder()
+	req = httptest.NewRequest("PUT", "/task", bytes.NewBufferString("N"))
+	router.ServeHTTP(rw, req)
+	require.Equal(t, http.StatusOK, rw.Result().StatusCode)
+
 	var prevState, newState robot.RobotState
 	for _, c := range strings.ReplaceAll(cmdString, " ", "") {
 		select {
@@ -244,10 +250,10 @@ func TestPutCommandTaskError(t *testing.T) {
 	notifier := &TestTaskStatusNotifier{
 		statesNotified: make([]robot.RobotTask, 0),
 	}
-	serveBot := &server.Robot{Robot: bot}
-	router := web.New(server.Context{}).
+	serveBot := &wrApi.Robot{Robot: bot}
+	router := web.New(wrApi.Context{}).
 		Middleware(getContextInitMiddleware(serveBot, notifier))
-	router = server.AttachRoutes(router)
+	router = wrApi.AttachRoutes(router)
 
 	rw := httptest.NewRecorder()
 	req := httptest.NewRequest("PUT", "/task", bytes.NewBufferString(cmdString))
@@ -286,10 +292,10 @@ func TestPutCommandErrorReadingBody(t *testing.T) {
 	notifier := &TestTaskStatusNotifier{
 		statesNotified: make([]robot.RobotTask, 0),
 	}
-	serveBot := &server.Robot{Robot: bot}
-	router := web.New(server.Context{}).
+	serveBot := &wrApi.Robot{Robot: bot}
+	router := web.New(wrApi.Context{}).
 		Middleware(getContextInitMiddleware(serveBot, notifier))
-	router = server.AttachRoutes(router)
+	router = wrApi.AttachRoutes(router)
 
 	rw := httptest.NewRecorder()
 	// Note use of FailReader to trigger error
@@ -306,10 +312,10 @@ func TestPutCommandInvalidCommandString(t *testing.T) {
 	notifier := &TestTaskStatusNotifier{
 		statesNotified: make([]robot.RobotTask, 0),
 	}
-	serveBot := &server.Robot{Robot: bot}
-	router := web.New(server.Context{}).
+	serveBot := &wrApi.Robot{Robot: bot}
+	router := web.New(wrApi.Context{}).
 		Middleware(getContextInitMiddleware(serveBot, notifier))
-	router = server.AttachRoutes(router)
+	router = wrApi.AttachRoutes(router)
 
 	rw := httptest.NewRecorder()
 	req := httptest.NewRequest("PUT", "/task", bytes.NewBufferString(cmdString))
@@ -331,10 +337,10 @@ func TestPutCommandUnsafeCommandString(t *testing.T) {
 	notifier := &TestTaskStatusNotifier{
 		statesNotified: make([]robot.RobotTask, 0),
 	}
-	serveBot := &server.Robot{Robot: bot}
-	router := web.New(server.Context{}).
+	serveBot := &wrApi.Robot{Robot: bot}
+	router := web.New(wrApi.Context{}).
 		Middleware(getContextInitMiddleware(serveBot, notifier))
-	router = server.AttachRoutes(router)
+	router = wrApi.AttachRoutes(router)
 
 	rw := httptest.NewRecorder()
 	req := httptest.NewRequest("PUT", "/task", bytes.NewBufferString(cmdString))
@@ -350,10 +356,10 @@ func TestGetTaskStatus(t *testing.T) {
 	notifier := &TestTaskStatusNotifier{
 		statesNotified: make([]robot.RobotTask, 0),
 	}
-	serveBot := &server.Robot{Robot: bot}
-	router := web.New(server.Context{}).
+	serveBot := &wrApi.Robot{Robot: bot}
+	router := web.New(wrApi.Context{}).
 		Middleware(getContextInitMiddleware(serveBot, notifier))
-	router = server.AttachRoutes(router)
+	router = wrApi.AttachRoutes(router)
 
 	rw := httptest.NewRecorder()
 	req := httptest.NewRequest("PUT", "/task", bytes.NewBufferString(cmdString))
@@ -379,10 +385,10 @@ func TestGetTaskStatusTaskDoesNotExist(t *testing.T) {
 	notifier := &TestTaskStatusNotifier{
 		statesNotified: make([]robot.RobotTask, 0),
 	}
-	serveBot := &server.Robot{Robot: bot}
-	router := web.New(server.Context{}).
+	serveBot := &wrApi.Robot{Robot: bot}
+	router := web.New(wrApi.Context{}).
 		Middleware(getContextInitMiddleware(serveBot, notifier))
-	router = server.AttachRoutes(router)
+	router = wrApi.AttachRoutes(router)
 
 	rw := httptest.NewRecorder()
 	req := httptest.NewRequest("PUT", "/task", bytes.NewBufferString(cmdString))
@@ -411,10 +417,10 @@ func TestCancelTask(t *testing.T) {
 	notifier := &TestTaskStatusNotifier{
 		statesNotified: make([]robot.RobotTask, 0),
 	}
-	serveBot := &server.Robot{Robot: bot}
-	router := web.New(server.Context{}).
+	serveBot := &wrApi.Robot{Robot: bot}
+	router := web.New(wrApi.Context{}).
 		Middleware(getContextInitMiddleware(serveBot, notifier))
-	router = server.AttachRoutes(router)
+	router = wrApi.AttachRoutes(router)
 
 	var rw *httptest.ResponseRecorder
 	var req *http.Request
@@ -449,10 +455,10 @@ func TestCancelTaskNotFound(t *testing.T) {
 	notifier := &TestTaskStatusNotifier{
 		statesNotified: make([]robot.RobotTask, 0),
 	}
-	serveBot := &server.Robot{Robot: bot}
-	router := web.New(server.Context{}).
+	serveBot := &wrApi.Robot{Robot: bot}
+	router := web.New(wrApi.Context{}).
 		Middleware(getContextInitMiddleware(serveBot, notifier))
-	router = server.AttachRoutes(router)
+	router = wrApi.AttachRoutes(router)
 
 	rw := httptest.NewRecorder()
 	req := httptest.NewRequest("PUT", "/task", bytes.NewBufferString(cmdString))
@@ -477,10 +483,10 @@ func TestCancelTaskError(t *testing.T) {
 	notifier := &TestTaskStatusNotifier{
 		statesNotified: make([]robot.RobotTask, 0),
 	}
-	serveBot := &server.Robot{Robot: bot}
-	router := web.New(server.Context{}).
+	serveBot := &wrApi.Robot{Robot: bot}
+	router := web.New(wrApi.Context{}).
 		Middleware(getContextInitMiddleware(serveBot, notifier))
-	router = server.AttachRoutes(router)
+	router = wrApi.AttachRoutes(router)
 
 	rw := httptest.NewRecorder()
 	req := httptest.NewRequest("PUT", "/task", bytes.NewBufferString(cmdString))
