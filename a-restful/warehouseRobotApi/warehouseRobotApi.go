@@ -13,12 +13,29 @@ import (
 	"github.com/gocraft/web"
 )
 
+type TaskMap struct {
+	taskMap map[string]robot.RobotTask
+	lock    sync.RWMutex
+}
+
+func (tm *TaskMap) Get(taskId string) robot.RobotTask {
+	tm.lock.RLock()
+	defer tm.lock.RUnlock()
+	return tm.taskMap[taskId]
+}
+
+func (tm *TaskMap) Set(taskId string, task robot.RobotTask) {
+	tm.lock.Lock()
+	defer tm.lock.Unlock()
+	tm.taskMap[taskId] = task
+}
+
+// TODO: some form of garbage collection to stop this map from bloating
+var tasks = &TaskMap{taskMap: make(map[string]robot.RobotTask)}
+
 // Double-bookkeeping here to make it easier to find tasks by ID
 var taskQueue = make([]robot.RobotTask, 0)
 var taskQueueLock sync.Mutex
-
-// TODO: some form of garbage collection to stop this map from bloating
-var tasks = make(map[string]robot.RobotTask)
 
 // Robot is a wrapper around the robot.Robot interface that stores some useful metadata
 type Robot struct {
@@ -27,15 +44,19 @@ type Robot struct {
 	finalPos robot.RobotState
 }
 
+// TaskStatusNotifier represents a client for sending notifications to administrators in
+// response to task status changes
 type TaskStatusNotifier interface {
 	NotifyTaskStatus(status robot.RobotTask)
 }
 
+// Context is a group of resources used for handling requests
 type Context struct {
 	Robot    *Robot
 	Notifier TaskStatusNotifier
 }
 
+// AttachRoutes attaches the task routes to a provided router
 func AttachRoutes(router *web.Router) *web.Router {
 	return router.
 		Middleware(injectRobot).
@@ -45,23 +66,26 @@ func AttachRoutes(router *web.Router) *web.Router {
 		Delete("/task/:taskId", handleCancelTask)
 }
 
+// injectRobot provides an instance of Robot for use when handling requests
 func injectRobot(
 	ctx *Context,
 	rw web.ResponseWriter,
 	req *web.Request,
 	next web.NextMiddlewareFunc,
 ) {
-	// TODO
+	// TODO: see "Notes/Further Work" in Readme
 	next(rw, req)
 }
 
+// injectNotifier provides an instance of TaskStatusNotifier for use when handling
+// requests
 func injectNotifier(
 	ctx *Context,
 	rw web.ResponseWriter,
 	req *web.Request,
 	next web.NextMiddlewareFunc,
 ) {
-	// TODO
+	// TODO: see "Notes/Further Work" in Readme
 	next(rw, req)
 }
 
@@ -133,24 +157,24 @@ func monitorTask(
 		}
 	}()
 	cmdString = strings.ReplaceAll(cmdString, " ", "")
-	task := tasks[taskId]
+	task := tasks.Get(taskId)
 	for range cmdString {
 		select {
 		case <-robotState:
 			task.State = robot.RobotTaskStateRunning
-			tasks[taskId] = task
+			tasks.Set(taskId, task)
 		case err := <-errors:
 			log.Printf("Received error from robot: %s", err.Error())
 			task.Error = err.Error()
 			task.State = robot.RobotTaskStateFailed
 			notifier.NotifyTaskStatus(task)
-			tasks[taskId] = task
+			tasks.Set(taskId, task)
 			return
 		}
 	}
 	task.State = robot.RobotTaskStateComplete
 	notifier.NotifyTaskStatus(task)
-	tasks[taskId] = task
+	tasks.Set(taskId, task)
 }
 
 func handlePutCommand(ctx *Context, rw web.ResponseWriter, req *web.Request) {
@@ -195,7 +219,7 @@ func handlePutCommand(ctx *Context, rw web.ResponseWriter, req *web.Request) {
 		Command: cmdString,
 		State:   robot.RobotTaskStatePending,
 	}
-	tasks[taskId] = task
+	tasks.Set(taskId, task)
 	taskQueueLock.Lock()
 	defer taskQueueLock.Unlock()
 	taskQueue = append(taskQueue, task)
@@ -210,7 +234,7 @@ func handlePutCommand(ctx *Context, rw web.ResponseWriter, req *web.Request) {
 func handleGetTaskStatus(ctx *Context, rw web.ResponseWriter, req *web.Request) {
 	ctx.Robot.lock.Lock()
 	defer ctx.Robot.lock.Unlock()
-	task := tasks[req.PathParams["taskId"]]
+	task := tasks.Get(req.PathParams["taskId"])
 	if task.Id == "" {
 		// Task does not exist
 		rw.WriteHeader(http.StatusNotFound)
