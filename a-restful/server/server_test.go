@@ -112,11 +112,20 @@ func (bot *FakeRobot) EnqueueTask(commands string) (
 }
 
 func (bot *FakeRobot) CancelTask(taskId string) error {
+	if bot.throwError {
+		return errors.New("an error occurred while cancelling")
+	}
 	taskFound := false
 	var newTaskList []FakeRobotTask
+	bot.lock.Lock()
+	defer bot.lock.Unlock()
 	for i, task := range bot.queuedTasks {
 		if task.Id == taskId {
-			newTaskList = append(bot.queuedTasks[:i], bot.queuedTasks[i+1:]...)
+			if i == len(bot.queuedTasks)-1 {
+				newTaskList = bot.queuedTasks[:i]
+			} else {
+				newTaskList = append(bot.queuedTasks[:i], bot.queuedTasks[i+1:]...)
+			}
 			taskFound = true
 			break
 		}
@@ -145,7 +154,7 @@ func (ttsn *TestTaskStatusNotifier) NotifyTaskStatus(status robot.RobotTask) {
 }
 
 func getContextInitMiddleware(
-	bot robot.Robot,
+	bot *server.Robot,
 	notifier server.TaskStatusNotifier,
 ) func(
 	*server.Context,
@@ -159,7 +168,7 @@ func getContextInitMiddleware(
 		req *web.Request,
 		next web.NextMiddlewareFunc,
 	) {
-		ctx.Robot = &server.Robot{Robot: bot}
+		ctx.Robot = bot
 		ctx.Notifier = notifier
 		next(rw, req)
 	}
@@ -184,12 +193,13 @@ func TestPutCommandTaskSuccess(t *testing.T) {
 	notifier := &TestTaskStatusNotifier{
 		statesNotified: make([]robot.RobotTask, 0),
 	}
+	serveBot := &server.Robot{Robot: bot}
 	router := web.New(server.Context{}).
-		Middleware(getContextInitMiddleware(bot, notifier))
+		Middleware(getContextInitMiddleware(serveBot, notifier))
 	router = server.AttachRoutes(router)
 
 	rw := httptest.NewRecorder()
-	req := httptest.NewRequest("PUT", "/", bytes.NewBufferString(cmdString))
+	req := httptest.NewRequest("PUT", "/task", bytes.NewBufferString(cmdString))
 	router.ServeHTTP(rw, req)
 
 	require.Equal(t, http.StatusOK, rw.Result().StatusCode)
@@ -234,12 +244,13 @@ func TestPutCommandTaskError(t *testing.T) {
 	notifier := &TestTaskStatusNotifier{
 		statesNotified: make([]robot.RobotTask, 0),
 	}
+	serveBot := &server.Robot{Robot: bot}
 	router := web.New(server.Context{}).
-		Middleware(getContextInitMiddleware(bot, notifier))
+		Middleware(getContextInitMiddleware(serveBot, notifier))
 	router = server.AttachRoutes(router)
 
 	rw := httptest.NewRecorder()
-	req := httptest.NewRequest("PUT", "/", bytes.NewBufferString(cmdString))
+	req := httptest.NewRequest("PUT", "/task", bytes.NewBufferString(cmdString))
 	router.ServeHTTP(rw, req)
 	// Request will still succeed as task was accepted
 	require.Equal(t, http.StatusOK, rw.Result().StatusCode)
@@ -275,13 +286,14 @@ func TestPutCommandErrorReadingBody(t *testing.T) {
 	notifier := &TestTaskStatusNotifier{
 		statesNotified: make([]robot.RobotTask, 0),
 	}
+	serveBot := &server.Robot{Robot: bot}
 	router := web.New(server.Context{}).
-		Middleware(getContextInitMiddleware(bot, notifier))
+		Middleware(getContextInitMiddleware(serveBot, notifier))
 	router = server.AttachRoutes(router)
 
 	rw := httptest.NewRecorder()
 	// Note use of FailReader to trigger error
-	req := httptest.NewRequest("PUT", "/", &FailReader{})
+	req := httptest.NewRequest("PUT", "/task", &FailReader{})
 	router.ServeHTTP(rw, req)
 	require.Equal(t, http.StatusInternalServerError, rw.Result().StatusCode)
 }
@@ -294,12 +306,13 @@ func TestPutCommandInvalidCommandString(t *testing.T) {
 	notifier := &TestTaskStatusNotifier{
 		statesNotified: make([]robot.RobotTask, 0),
 	}
+	serveBot := &server.Robot{Robot: bot}
 	router := web.New(server.Context{}).
-		Middleware(getContextInitMiddleware(bot, notifier))
+		Middleware(getContextInitMiddleware(serveBot, notifier))
 	router = server.AttachRoutes(router)
 
 	rw := httptest.NewRecorder()
-	req := httptest.NewRequest("PUT", "/", bytes.NewBufferString(cmdString))
+	req := httptest.NewRequest("PUT", "/task", bytes.NewBufferString(cmdString))
 	router.ServeHTTP(rw, req)
 	// Request will still succeed as task was accepted
 	require.Equal(t, http.StatusBadRequest, rw.Result().StatusCode)
@@ -318,12 +331,13 @@ func TestPutCommandUnsafeCommandString(t *testing.T) {
 	notifier := &TestTaskStatusNotifier{
 		statesNotified: make([]robot.RobotTask, 0),
 	}
+	serveBot := &server.Robot{Robot: bot}
 	router := web.New(server.Context{}).
-		Middleware(getContextInitMiddleware(bot, notifier))
+		Middleware(getContextInitMiddleware(serveBot, notifier))
 	router = server.AttachRoutes(router)
 
 	rw := httptest.NewRecorder()
-	req := httptest.NewRequest("PUT", "/", bytes.NewBufferString(cmdString))
+	req := httptest.NewRequest("PUT", "/task", bytes.NewBufferString(cmdString))
 	router.ServeHTTP(rw, req)
 	require.Equal(t, http.StatusUnprocessableEntity, rw.Result().StatusCode)
 }
@@ -336,19 +350,20 @@ func TestGetTaskStatus(t *testing.T) {
 	notifier := &TestTaskStatusNotifier{
 		statesNotified: make([]robot.RobotTask, 0),
 	}
+	serveBot := &server.Robot{Robot: bot}
 	router := web.New(server.Context{}).
-		Middleware(getContextInitMiddleware(bot, notifier))
+		Middleware(getContextInitMiddleware(serveBot, notifier))
 	router = server.AttachRoutes(router)
 
 	rw := httptest.NewRecorder()
-	req := httptest.NewRequest("PUT", "/", bytes.NewBufferString(cmdString))
+	req := httptest.NewRequest("PUT", "/task", bytes.NewBufferString(cmdString))
 	router.ServeHTTP(rw, req)
 
 	require.Equal(t, http.StatusOK, rw.Result().StatusCode)
 	taskId := string(rw.Body.Bytes())
 
 	rw = httptest.NewRecorder()
-	req = httptest.NewRequest("GET", "/"+taskId, nil)
+	req = httptest.NewRequest("GET", "/task/"+taskId, nil)
 	router.ServeHTTP(rw, req)
 
 	require.Equal(t, http.StatusOK, rw.Result().StatusCode)
@@ -364,22 +379,69 @@ func TestGetTaskStatusTaskDoesNotExist(t *testing.T) {
 	notifier := &TestTaskStatusNotifier{
 		statesNotified: make([]robot.RobotTask, 0),
 	}
+	serveBot := &server.Robot{Robot: bot}
 	router := web.New(server.Context{}).
-		Middleware(getContextInitMiddleware(bot, notifier))
+		Middleware(getContextInitMiddleware(serveBot, notifier))
 	router = server.AttachRoutes(router)
 
 	rw := httptest.NewRecorder()
-	req := httptest.NewRequest("PUT", "/", bytes.NewBufferString(cmdString))
+	req := httptest.NewRequest("PUT", "/task", bytes.NewBufferString(cmdString))
 	router.ServeHTTP(rw, req)
 	require.Equal(t, http.StatusOK, rw.Result().StatusCode)
 
 	rw = httptest.NewRecorder()
-	req = httptest.NewRequest("GET", "/non-existent-task-id", nil)
+	req = httptest.NewRequest("GET", "/task/non-existent-task-id", nil)
 	router.ServeHTTP(rw, req)
 	require.Equal(t, http.StatusNotFound, rw.Result().StatusCode)
 }
 
 func TestCancelTask(t *testing.T) {
+	cmdStrings := []string{
+		"N",
+		"N",
+		"N",
+		"E", // Critical task: if this one is deleted, the next becomes unsafe
+		"W",
+		"N",
+	}
+	idxToCancel := 3
+	bot := NewFakeRobot()
+	// Don't process tasks for this test, as we want to check the task queue
+	bot.Stop()
+	notifier := &TestTaskStatusNotifier{
+		statesNotified: make([]robot.RobotTask, 0),
+	}
+	serveBot := &server.Robot{Robot: bot}
+	router := web.New(server.Context{}).
+		Middleware(getContextInitMiddleware(serveBot, notifier))
+	router = server.AttachRoutes(router)
+
+	var rw *httptest.ResponseRecorder
+	var req *http.Request
+	taskIds := make([]string, len(cmdStrings))
+	for i, cmdString := range cmdStrings {
+		rw = httptest.NewRecorder()
+		req = httptest.NewRequest("PUT", "/task", bytes.NewBufferString(cmdString))
+		router.ServeHTTP(rw, req)
+
+		require.Equal(t, http.StatusOK, rw.Result().StatusCode)
+		require.Len(t, bot.queuedTasks, i+1)
+		taskIds[i] = string(rw.Body.Bytes())
+	}
+
+	rw = httptest.NewRecorder()
+	req = httptest.NewRequest("DELETE", "/task/"+taskIds[idxToCancel], nil)
+	router.ServeHTTP(rw, req)
+
+	require.Equal(t, http.StatusOK, rw.Result().StatusCode)
+	require.Len(t, bot.queuedTasks, 3)
+	// Ensure correct tasks were deleted
+	for i, task := range bot.queuedTasks {
+		require.Equal(t, taskIds[i], task.Id)
+	}
+}
+
+func TestCancelTaskNotFound(t *testing.T) {
 	cmdString := "N E E N N W S"
 	bot := NewFakeRobot()
 	// Don't process tasks for this test, as we want to check the task queue
@@ -387,24 +449,23 @@ func TestCancelTask(t *testing.T) {
 	notifier := &TestTaskStatusNotifier{
 		statesNotified: make([]robot.RobotTask, 0),
 	}
+	serveBot := &server.Robot{Robot: bot}
 	router := web.New(server.Context{}).
-		Middleware(getContextInitMiddleware(bot, notifier))
+		Middleware(getContextInitMiddleware(serveBot, notifier))
 	router = server.AttachRoutes(router)
 
 	rw := httptest.NewRecorder()
-	req := httptest.NewRequest("PUT", "/", bytes.NewBufferString(cmdString))
+	req := httptest.NewRequest("PUT", "/task", bytes.NewBufferString(cmdString))
 	router.ServeHTTP(rw, req)
 
 	require.Equal(t, http.StatusOK, rw.Result().StatusCode)
 	require.Len(t, bot.queuedTasks, 1)
-	taskId := string(rw.Body.Bytes())
 
 	rw = httptest.NewRecorder()
-	req = httptest.NewRequest("DELETE", "/"+taskId, nil)
+	req = httptest.NewRequest("DELETE", "/task/non-existent-task-id", nil)
 	router.ServeHTTP(rw, req)
 
-	require.Equal(t, http.StatusOK, rw.Result().StatusCode)
-	require.Len(t, bot.queuedTasks, 0)
+	require.Equal(t, http.StatusNotFound, rw.Result().StatusCode)
 }
 
 func TestCancelTaskError(t *testing.T) {
@@ -412,22 +473,25 @@ func TestCancelTaskError(t *testing.T) {
 	bot := NewFakeRobot()
 	// Don't process tasks for this test, as we want to check the task queue
 	bot.Stop()
+	bot.throwError = true
 	notifier := &TestTaskStatusNotifier{
 		statesNotified: make([]robot.RobotTask, 0),
 	}
+	serveBot := &server.Robot{Robot: bot}
 	router := web.New(server.Context{}).
-		Middleware(getContextInitMiddleware(bot, notifier))
+		Middleware(getContextInitMiddleware(serveBot, notifier))
 	router = server.AttachRoutes(router)
 
 	rw := httptest.NewRecorder()
-	req := httptest.NewRequest("PUT", "/", bytes.NewBufferString(cmdString))
+	req := httptest.NewRequest("PUT", "/task", bytes.NewBufferString(cmdString))
 	router.ServeHTTP(rw, req)
 
 	require.Equal(t, http.StatusOK, rw.Result().StatusCode)
 	require.Len(t, bot.queuedTasks, 1)
+	taskId := string(rw.Body.Bytes())
 
 	rw = httptest.NewRecorder()
-	req = httptest.NewRequest("DELETE", "/non-existent-task-id", nil)
+	req = httptest.NewRequest("DELETE", "/task/"+taskId, nil)
 	router.ServeHTTP(rw, req)
 
 	require.Equal(t, http.StatusInternalServerError, rw.Result().StatusCode)

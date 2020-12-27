@@ -13,6 +13,10 @@ import (
 	"github.com/gocraft/web"
 )
 
+// Double-bookkeeping here to make it easier to find tasks by ID
+var taskQueue = make([]robot.RobotTask, 0)
+var taskQueueLock sync.Mutex
+
 // TODO: some form of garbage collection to stop this map from bloating
 var tasks = make(map[string]robot.RobotTask)
 
@@ -36,9 +40,9 @@ func AttachRoutes(router *web.Router) *web.Router {
 	return router.
 		Middleware(injectRobot).
 		Middleware(injectNotifier).
-		Put("/", handlePutCommand).
-		Get("/:taskId", handleGetTaskStatus).
-		Delete("/:taskId", handleCancelTask)
+		Put("/task", handlePutCommand).
+		Get("/task/:taskId", handleGetTaskStatus).
+		Delete("/task/:taskId", handleCancelTask)
 }
 
 func main() {
@@ -83,9 +87,9 @@ func validateCommandString(cmdString string) error {
 
 func getNewFinalPosition(
 	cmdString string,
-	bot robot.Robot,
+	bot *Robot,
 ) (robot.RobotState, error) {
-	pos := bot.CurrentState()
+	pos := bot.finalPos
 	for _, c := range cmdString {
 		switch c {
 		case 'N':
@@ -116,6 +120,24 @@ func monitorTask(
 	errors chan error,
 	notifier TaskStatusNotifier,
 ) {
+	defer func() {
+		taskQueueLock.Lock()
+		defer taskQueueLock.Unlock()
+		// Remove the completed task from the task queue
+		// TODO okay for small task queues, but inefficient for longer ones
+		// May need to be optimised in future
+		for i, qTask := range taskQueue {
+			if qTask.Id == taskId {
+				if i == len(taskQueue)-1 {
+					// Task is last task in queue - create empty queue
+					taskQueue = make([]robot.RobotTask, 0)
+				} else {
+					taskQueue = append(taskQueue[:i], taskQueue[i+1:]...)
+				}
+				break
+			}
+		}
+	}()
 	cmdString = strings.ReplaceAll(cmdString, " ", "")
 	task := tasks[taskId]
 	for range cmdString {
@@ -180,6 +202,9 @@ func handlePutCommand(ctx *Context, rw web.ResponseWriter, req *web.Request) {
 		State:   robot.RobotTaskStatePending,
 	}
 	tasks[taskId] = task
+	taskQueueLock.Lock()
+	defer taskQueueLock.Unlock()
+	taskQueue = append(taskQueue, task)
 
 	_, err = rw.Write([]byte(taskId))
 	if err != nil {
@@ -189,6 +214,8 @@ func handlePutCommand(ctx *Context, rw web.ResponseWriter, req *web.Request) {
 }
 
 func handleGetTaskStatus(ctx *Context, rw web.ResponseWriter, req *web.Request) {
+	ctx.Robot.lock.Lock()
+	defer ctx.Robot.lock.Unlock()
 	task := tasks[req.PathParams["taskId"]]
 	if task.Id == "" {
 		// Task does not exist
@@ -203,13 +230,51 @@ func handleGetTaskStatus(ctx *Context, rw web.ResponseWriter, req *web.Request) 
 }
 
 func handleCancelTask(ctx *Context, rw web.ResponseWriter, req *web.Request) {
-	// Assumes that the robot will report via channels returned from `EnqueueTask` when
-	// a task has been cancelled, and reporting does not need to be done here
-	err := ctx.Robot.CancelTask(req.PathParams["taskId"])
-	if err != nil {
-		log.Printf("Error cancelling task %s: %s", req.PathParams["taskId"], err.Error())
-		rw.WriteHeader(http.StatusInternalServerError)
+	ctx.Robot.lock.Lock()
+	defer ctx.Robot.lock.Unlock()
+	taskQueueLock.Lock()
+	defer taskQueueLock.Unlock()
+	taskId := req.PathParams["taskId"]
+
+	// Find task in queue, and all tasks downstream from there
+	var tasksToCancel []robot.RobotTask
+	for i, task := range taskQueue {
+		if task.Id == taskId {
+			tasksToCancel = append([]robot.RobotTask(nil), taskQueue[i:]...)
+		}
+	}
+	if len(tasksToCancel) == 0 {
+		log.Printf("Error while deleting: task %s not found", taskId)
+		rw.WriteHeader(http.StatusNotFound)
 		return
+	}
+
+	// Cancel task and all tasks downstream
+	for _, task := range tasksToCancel {
+		// Assumes that the robot will report via channels returned from `EnqueueTask` when
+		// a task has been cancelled, and reporting does not need to be done here
+		err := ctx.Robot.CancelTask(task.Id)
+		if err != nil {
+			log.Printf("Error cancelling task %s: %s", taskId, err.Error())
+			// Signal that there was an error if cancelling *any* of the tasks fail, as
+			// the caller may need to intervene manually
+			rw.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		// Remove the cancelled task from the task queue
+		// TODO okay for small task queues, but inefficient for longer ones
+		// May need to be optimised in future
+		for i, qTask := range taskQueue {
+			if qTask.Id == task.Id {
+				if i == len(taskQueue)-1 {
+					// Task is last task in queue
+					taskQueue = taskQueue[i:]
+				} else {
+					taskQueue = append(taskQueue[:i], taskQueue[i+1:]...)
+				}
+				break
+			}
+		}
 	}
 	rw.WriteHeader(http.StatusOK)
 }
